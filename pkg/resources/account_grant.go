@@ -1,6 +1,8 @@
 package resources
 
 import (
+	"database/sql"
+
 	"github.com/chanzuckerberg/terraform-provider-snowflake/pkg/snowflake"
 	"github.com/chanzuckerberg/terraform-provider-snowflake/pkg/validation"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
@@ -88,6 +90,36 @@ func CreateAccountGrant(d *schema.ResourceData, meta interface{}) error {
 	return ReadAccountGrant(d, meta)
 }
 
+type accountGrant struct {
+	CreatedOn   sql.RawBytes   `db:"created_on"`
+	Privilege   sql.NullString `db:"privilege"`
+	GrantedTo   sql.NullString `db:"granted_to"`
+	GranteeName sql.NullString `db:"grantee_name"`
+	Grantedby   sql.NullString `db:"granted_by"`
+}
+
+func readAccountGrants(db *sql.DB, showStatement string) ([]*accountGrant, error) {
+	rows, err := snowflake.Query(db, showStatement)
+
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	grants := make([]*accountGrant, 0)
+	for rows.Next() {
+		g := &accountGrant{}
+		err = rows.StructScan(g)
+		if err != nil {
+			return nil, err
+		}
+		grants = append(grants, g)
+	}
+
+	return grants, nil
+
+}
+
 // ReadAccountGrant implements schema.ReadFunc
 func ReadAccountGrant(d *schema.ResourceData, meta interface{}) error {
 	grantID, err := grantIDFromString(d.Id())
@@ -105,7 +137,29 @@ func ReadAccountGrant(d *schema.ResourceData, meta interface{}) error {
 
 	builder := snowflake.AccountGrant()
 
-	return readGenericGrant(d, meta, accountGrantSchema, builder, false, validAccountPrivileges)
+	tfRoles := expandStringList(d.Get("roles").(*schema.Set).List())
+	roles := make([]string, 0)
+
+	grants, err := readAccountGrants(meta.(*sql.DB), builder.Show())
+	if err != nil {
+		return err
+	}
+
+	for _, grant := range grants {
+		for _, tfRole := range tfRoles {
+			if tfRole == grant.GranteeName.String {
+				roles = append(roles, grant.GranteeName.String)
+			}
+		}
+	}
+
+	err = d.Set("roles", roles)
+	if err != nil {
+		return err
+	}
+
+	return nil
+
 }
 
 // DeleteAccountGrant implements schema.DeleteFunc
